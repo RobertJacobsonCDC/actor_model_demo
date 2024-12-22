@@ -1,12 +1,19 @@
 /*!
 
-A `Message` is sent in an `Envelope`. The `Envelope` contains the target channel, the handle of the sender, and the `Message` (the payload).
+A `Message` is sent in an `Envelope`. The `Envelope` contains the target
+channel, the handle of the sender, and the `Message` (the payload).
+
+The structure of messages can be as simple or as complex as you want. I've used
+composition of `Channel`s, `Envelope`s, `Message`s, and `MessagePayload`s, but that's
+not the only way to encode and route messages that makes sense. In fact, having the
+content of the message (`MessagePayload`) be three layers deep might be overkill.
 
 */
 
 use std::{
   fmt::Debug,
-  rc::Rc
+  rc::Rc,
+  hash::Hash
 };
 
 use crate::{
@@ -14,45 +21,52 @@ use crate::{
   timeline::Time
 };
 
+// Envelopes and messages should generally be immutable, as multiple actors
+// will potentially access them.
+pub type RcEnvelope<M, T> = Rc<Envelope<M, T>>;
 
-pub type RcEnvelope = Rc<Envelope>;
-pub type RcMessagePayload = Rc<dyn MessagePayload>;
+/// The `Channel` struct below is parameterized by `Topic` which as a lot of trait
+/// bounds. Instead of listing all the bounds everywhere, we just require `Topic`
+/// to implement a trait that has all the bounds as supertraits.
+///
+/// An alternative to this is to make topics a numeric `TopicHandle` which is assigned
+/// by something that client code registers the topic with (presumably `Router`).
+pub trait BoundedTopic: Copy + Clone + Debug + PartialEq + Eq + Hash {}
+/// Conveniently, we implement `BoundedTopic` for *any* type with the right trait bounds.
+impl<T> BoundedTopic for T where T: Copy + Clone + Debug + PartialEq + Eq + Hash {}
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
-pub enum Channel{
+
+/// `Channel`s are the recipient's of messages (`Envelope`s). You could conceivably
+/// just have a `Topic` generic, but having a parameterized `Channel` guarantees
+/// variants for timeline-related messages.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Channel<Topic>
+    where Topic: BoundedTopic
+{
   // These are just examples. It's not clear if `Timeline` services should be
   // represented here.
   TimelineEvent, // Emitted by `Timeline`
   ScheduleEvent, // Request to schedule and event
-  Topic(u32),
+  Topic(Topic),
   Actor(ActorHandle),
   General,       // Catch all
 }
 
-// In principle, `Envelope` does not need to be `Copy` or even `Clone`, but we
-// do it here for simplicity.
+impl<Topic> Channel<Topic>
+    where Topic: BoundedTopic
+{
+  pub fn with_topic<T: Into<Topic>>(self, topic: T) -> Self {
+    Channel::Topic(topic.into())
+  }
+}
+
 #[derive(Debug)]
-pub struct Envelope {
+pub struct Envelope<Message, Topic>
+    where Topic: BoundedTopic,
+          Message: Clone + Debug
+{
   pub from   : ActorHandle,
-  pub to     : Channel,
-  pub message: Message
+  pub to     : Channel<Topic>,
+  pub message: Message,
+  pub time   : Option<Time>
 }
-
-// ToDo: Is an enum really necessary? Why not just have a `MessagePayload`?
-#[derive(Debug)]
-pub enum Message{
-  ScheduleEvent(RcEnvelope, Time),
-  TimelineEvent(RcEnvelope, Time),
-  Payload(RcMessagePayload),
-}
-
-
-/// `MessagePayload` marks a type as the content of a message.
-pub trait MessagePayload: Debug {}
-
-// A handful of message payloads
-impl MessagePayload for () {}
-impl MessagePayload for String {}
-impl MessagePayload for ActorHandle {}
-impl MessagePayload for u64 {}
-impl MessagePayload for Time {}

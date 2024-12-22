@@ -1,7 +1,7 @@
 mod timeline;
-mod message;
-mod actor;
-mod router;
+pub mod message;
+pub mod actor;
+pub mod router;
 pub mod rccell;
 
 
@@ -13,7 +13,7 @@ mod tests {
 
   #[test]
   fn it_works() {
-    let mut router = Router::new();
+    let mut router = Router::<(), ()>::new();
     router.run();
 
   }

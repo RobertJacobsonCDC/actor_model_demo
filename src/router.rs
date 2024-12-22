@@ -5,72 +5,73 @@ A `Router` owns the actors and orchestrates message passing.
 */
 
 use std::{
-    rc::Rc,
     collections::HashMap,
-    cell::RefCell
+    cell::RefCell,
+    fmt::Debug
 };
 
 use crate::{
-    rccell::RcCell,
+    actor::{
+        ActorHandle,
+        RcActor
+    },
     message::{
         Channel,
         RcEnvelope,
         Envelope,
+        BoundedTopic
     },
-    actor::{ActorHandle, RcActor},
     timeline::{
         Timeline,
         Event
     },
-    rc_cell,
 };
-use crate::message::Message;
 
-pub struct Router {
+pub const TIMELINE_HANDLE: ActorHandle = 0;
+
+/// It would be nice to just treat the timeline like any other actor. We could do that if we had a notion of
+pub struct Router<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
     /// List of `Actor`s participating in this `Router`. In this implementation, the
-    /// `Router` owns the `Actor`s. The `Router` automatically inserts a `Timeline`
-    /// as the first actor.
-    actors       : Vec<RcActor>,
-    timeline     : RcActor,
+    /// `Router` owns the `Actor`s.
+    actors       : Vec<RcActor<Message, Topic>>,
+    timeline     : Timeline<Message, Topic>,
     /// Map from channels to the actors subscribed to those channels.
     /// If the number of actors is known to be small, say, < 128, then you can
     /// use a bit mask instead of a `Vec<ActorHandle>`. You might also make this
     /// a HashSet or something to prevent double subscriptions.
-    subscriptions: RefCell<HashMap<Channel, Vec<ActorHandle>>>,
+    subscriptions: RefCell<HashMap<Channel<Topic>, Vec<ActorHandle>>>,
     /// Queue of messages ready for immediate processing
-    message_queue: Vec<RcEnvelope>
+    message_queue: Vec<RcEnvelope<Message, Topic>>
 }
 
-impl Default for Router {
+impl<Message, Topic> Default for Router<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
     fn default() -> Self {
-        let rc_timeline: RcActor = rc_cell!(Timeline::default());
-        let mut new_router = Router{
+        Router{
             actors       : vec![],
-            timeline     : rc_timeline.clone(),
+            timeline     : Timeline::default(),
             subscriptions: RefCell::new(HashMap::default()),
             message_queue: vec![],
-        };
-        new_router.add_actor(new_router.timeline.clone());
-        new_router
+        }
     }
 }
 
-impl Router {
+impl<Message, Topic> Router<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
     pub fn new() -> Self {
       Router::default()
     }
 
-    fn pop_timeline_event(&mut self) -> Option<Event> {
-        let mut actor = self.actors[0].borrow_mut();
-        let timeline = actor.as_any_mut()
-                            .downcast_mut::<Timeline>()
-                            .unwrap(); // First element is `Timeline` by construction.
-        timeline.pop()
-    }
-
     /// Adds the actor to the router. The `Router` owns the actor, so we take a `BxActor`.
     /// (We could allow actors in multiple routers, but we don't.)
-    pub fn add_actor(&mut self, actor: RcActor) {
+    pub fn add_actor(&mut self, actor: RcActor<Message, Topic>) {
         let actor_handle = self.actors.len() as ActorHandle;
         self.actors.push(actor.clone());
 
@@ -99,13 +100,15 @@ impl Router {
                 continue;
             }
 
-            if let Some(event) = self.pop_timeline_event() {
+            if let Some(event) = self.timeline.pop() {
                 let Event{ envelope: event_envelope, time} = event;
+                let Envelope{from, ..} = event_envelope.as_ref();
 
                 let envelope = Envelope{
-                    from   : 0, // From the timeline
+                    from   : *from,
                     to     : Channel::TimelineEvent,
-                    message: Message::TimelineEvent(event_envelope, time),
+                    message: event_envelope.message.clone(),
+                    time   : Some(time)
                 };
                 self.route(RcEnvelope::new(envelope));
             } else {
@@ -115,14 +118,29 @@ impl Router {
         }
     }
 
+
     /// Handles a single message in the message queue.
     /// (This method could be public.)
-    fn route(&mut self, envelope: RcEnvelope) {
+    fn route(&mut self, envelope: RcEnvelope<Message, Topic>) {
+        // Check for timeline-specific messages.
+        if let Envelope{to: Channel::ScheduleEvent, time: Some(time), ..} = envelope.as_ref(){
+            // A real implementation would have more elaborate error handling.
+            assert!(*time >= self.timeline.now());
+
+            self.timeline.push(
+                Event{
+                    time: *time,
+                    envelope: envelope.clone(),
+                }
+            )
+            // We do not return, because other actors might wish to act on timeline messages
+        }
+
         let mut subscriptions = self.subscriptions.borrow_mut();
         let subscribers = subscriptions.entry(envelope.to).or_insert_with(Vec::new);
 
         for handle in subscribers {
-            let subscriber: &RcActor = self.actors.get(*handle as usize).unwrap();
+            let subscriber: &RcActor<Message, Topic> = self.actors.get(*handle as usize).unwrap();
             let mut receiver = subscriber.borrow_mut();
             receiver.receive_message(envelope.clone());
         }

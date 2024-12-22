@@ -5,22 +5,16 @@ A `Timeline` emits messages at scheduled "times." `Actor`s can schedule messages
 */
 
 use std::{
-  any::Any,
   cmp::{Ordering, Reverse},
   collections::{BinaryHeap},
-  rc::Rc,
+  fmt::Debug
 };
 
 use ordered_float::OrderedFloat;
 
 use crate::{
-  actor::{Actor, ActorHandle},
-  message::{
-    Channel,
-    Envelope,
-    Message,
-    RcEnvelope
-  },
+  message::RcEnvelope,
+  message::BoundedTopic
 };
 
 pub type Time = OrderedFloat<f64>;
@@ -28,27 +22,44 @@ pub type Time = OrderedFloat<f64>;
 
 // region Event
 
-pub struct Event {
+pub struct Event<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   pub time    : Time,
-  pub envelope: RcEnvelope,
+  /// We take the simple approach of just taking an `Envelope` and letting the scheduler
+  /// decide its contents. This way there is a `to` and `from` built-in.
+  pub envelope: RcEnvelope<Message, Topic>,
   // We could also record the actor who scheduled the event, etc.
 }
 
 // Implements ordering of events in the timeline's priority queue. This is necessary because `BinaryHeap` is a max heap, not a min heap, and we want a min heap.
 //
 // Be warned that `Event`s are equal if they are scheduled at the same time regardless of envelope.
-impl PartialEq for Event {
+impl<Message, Topic> PartialEq for Event<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   fn eq(&self, other: &Self) -> bool {
     self.time == other.time
   }
 }
-impl Eq for Event {}
-impl PartialOrd for Event {
+impl<Message, Topic> Eq for Event<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{}
+impl<Message, Topic> PartialOrd for Event<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     Some(self.cmp(&other))
   }
 }
-impl Ord for Event {
+impl<Message, Topic> Ord for Event<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   fn cmp(&self, other: &Self) -> Ordering {
     Reverse(self.time).cmp(&Reverse(other.time))
   }
@@ -56,22 +67,45 @@ impl Ord for Event {
 
 // endregion Event
 
-#[derive(Default)]
-pub struct Timeline {
+pub struct Timeline<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   now         : Time,
-  event_queue : BinaryHeap<Event>,
-  actor_handle: ActorHandle,
+  event_queue : BinaryHeap<Event<Message, Topic>>,
+  // actor_handle: ActorHandle,
+}
+
+impl<Message, Topic> Default for Timeline<Message, Topic>
+where Message: Clone + Debug,
+      Topic  : BoundedTopic
+{
+  fn default() -> Self {
+    Self {
+      now         : Time::default(),
+      event_queue : BinaryHeap::new(),
+      // actor_handle: ActorHandle::default(),
+    }
+  }
 }
 
 
-impl Timeline {
+impl<Message, Topic> Timeline<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
   #[inline(always)]
-  pub fn push(&mut self, event: Event) {
+  pub fn now(&self) -> Time {
+    self.now
+  }
+
+  #[inline(always)]
+  pub fn push(&mut self, event: Event<Message, Topic>) {
     self.event_queue.push(event)
   }
 
   #[inline(always)]
-  pub fn pop(&mut self) -> Option<Event> {
+  pub fn pop(&mut self) -> Option<Event<Message, Topic>> {
     let popped = self.event_queue.pop();
     if let Some(Event{ time, .. }) = &popped {
       self.now = time.clone();
@@ -81,60 +115,36 @@ impl Timeline {
   }
 }
 
-impl Actor for Timeline {
-  fn as_any(&self) -> &dyn Any { self }
-  fn as_any_mut(&mut self) -> &mut dyn Any { self }
+/*
+impl<Message, Topic> Actor<Message, Topic> for Timeline<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
+  /// Destructures the message and schedules the event it contains
+  fn receive_message(&mut self, envelope: RcEnvelope<Message, Topic>) -> Vec<RcEnvelope<Message, Topic>> {
+    let Envelope{ from: _from_actor, to: from_channel, message, time } = envelope.as_ref();
 
-  fn emit_message(&mut self) -> RcEnvelope {
-    match self.event_queue.pop() {
-
-      Some(Event{time, envelope}) => {
-        Rc::new(
-          Envelope{
-            from   : self.actor_handle,
-            to     : Channel::TimelineEvent,
-            message: Message::TimelineEvent(envelope, time)
-          }
-        )
-      }
-
-      None => {
-        // The event queue is checked first before `emit_message(..)` is called,
-        // so this is unreachable.
-        unreachable!()
-      }
+    if let (Channel::ScheduleEvent, Some(time)) = (from_channel, time) {
+      self.push(
+        Event{
+          time    : time.clone(),
+          envelope: envelope.clone()
+        }
+      );
+    } else {
+      // This implementation only receives `ScheduleEvent` messages.
+      unreachable!("Malformed Envelope sent to Channel::ScheduleEvent");
     }
+
+    // Nothing to emit
+    vec![]
   }
 
-  fn receive_message(&mut self, envelope: RcEnvelope) {
-    // Destructures the message and schedules the event it contains
-    let Envelope{ from: _from_actor, to: from_channel, message } = envelope.as_ref();
-
-    if let Channel::ScheduleEvent = from_channel {
-      if let Message::ScheduleEvent(event_envelope, time) = message {
-        self.push(
-          Event{
-            time: time.clone(),
-            envelope: event_envelope.clone()
-          }
-        );
-      }
-      else {
-        // This PoC only receives `ScheduleEvent` messages.
-        unreachable!()
-      }
-    }
-    else {
-      // This PoC only receives `ScheduleEvent` messages.
-      unreachable!()
-    }
-  }
-
-  fn set_handle(&mut self, handle: ActorHandle) {
+  fn register(&mut self, handle: ActorHandle) -> (Vec<Channel<Topic>>, Vec<RcEnvelope<Message, Topic>>) {
     self.actor_handle = handle;
-  }
 
-  fn get_handle(&self) -> ActorHandle {
-    self.actor_handle
+    // We subscribe to requests to schedule events and emit no messages.
+    (vec![Channel::ScheduleEvent], vec![])
   }
 }
+*/

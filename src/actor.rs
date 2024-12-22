@@ -4,35 +4,29 @@ An `Actor` is an entity that can emit messages and subscribe to channels.
 
 */
 
-use std::any::Any;
+use std::fmt::Debug;
 
 use crate::{
-  message::{Channel, RcEnvelope},
-  rccell::RcCell
+  message::{
+    Channel,
+    RcEnvelope,
+    BoundedTopic
+  },
+  rccell::RcCell,
 };
 
 pub type ActorHandle = u32;
-pub type RcActor = RcCell<dyn Actor>;
+pub type RcActor<Message, Topic> = RcCell<dyn Actor<Message, Topic>>;
 
-pub trait Actor: Any {
-  fn as_any(&self) -> &dyn Any;
-  fn as_any_mut(&mut self) -> &mut dyn Any;
-  /*
-  Implement these as
-  fn as_any(&self) -> &dyn Any { self }
-  fn as_any_mut(&mut self) -> &mut dyn Any { self }
-  */
+pub trait Actor<Message, Topic>
+    where Message: Clone + Debug,
+          Topic  : BoundedTopic
+{
+  /// A message is delivered to this `Actor`. The `Actor` has the opportunity to respond
+  fn receive_message(&mut self, envelope: RcEnvelope<Message, Topic>) -> Vec<RcEnvelope<Message, Topic>>;
 
-  fn emit_message(&mut self) -> RcEnvelope;
-  fn receive_message(&mut self, envelope: RcEnvelope);
-
-  fn set_handle(&mut self, handle: ActorHandle);
-  fn get_handle(&self) -> ActorHandle;
-
-  // Called when the `Router` is adding this actor with the provided `ActorHandle`.
-  // The `Actor` has an opportunity to subscribe to channels and send messages.
-  fn register(&mut self, handle: ActorHandle) -> (Vec<Channel>, Vec<RcEnvelope>){
-    self.set_handle(handle);
-    (Vec::new(), Vec::new())
-  }
+  /// Called when the `Router` is adding this actor with the provided `ActorHandle`.
+  /// Implementations should store their own `ActorHandle` for later use. The
+  /// `Actor` has an opportunity to subscribe to channels and send initial messages.
+  fn register(&mut self, handle: ActorHandle) -> (Vec<Channel<Topic>>, Vec<RcEnvelope<Message, Topic>>);
 }
