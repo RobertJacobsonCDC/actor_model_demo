@@ -43,11 +43,19 @@ impl<T> BoundedTopic for T where T: Copy + Clone + Debug + PartialEq + Eq + Hash
 pub enum Channel<Topic>
     where Topic: BoundedTopic
 {
-  // These are just examples. It's not clear if `Timeline` services should be
-  // represented here.
+  // System Messages
+  Stop,  // Request early exit
+  Debug, // Request command line
+
+  // Timeline-related Messages
   TimelineEvent, // Emitted by `Timeline`
-  ScheduleEvent, // Request to schedule and event
+  ScheduleEvent, // Request to schedule an event
+  Time,          // Time request and answer
+
+  // Channels used by client code. This is the mechanism by which we extend `Channel`.
   Topic(Topic),
+
+  // Just some examples
   Actor(ActorHandle),
   General,       // Catch all
 }
@@ -66,7 +74,7 @@ pub struct Envelope<Message, Topic>
           Message: Clone + Debug
 {
   pub from   : ActorHandle,
-  pub to     : Channel<Topic>,
-  pub message: Message,
+  pub channel: Channel<Topic>,
+  pub message: Option<Message>,
   pub time   : Option<Time>
 }

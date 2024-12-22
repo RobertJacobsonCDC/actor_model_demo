@@ -44,7 +44,11 @@ pub struct Router<Message, Topic>
     /// a HashSet or something to prevent double subscriptions.
     subscriptions: RefCell<HashMap<Channel<Topic>, Vec<ActorHandle>>>,
     /// Queue of messages ready for immediate processing
-    message_queue: Vec<RcEnvelope<Message, Topic>>
+    message_queue: Vec<RcEnvelope<Message, Topic>>,
+    /// An early exit has been triggered
+    stop_requested: bool,
+    /// Debug session has been triggered.
+    debug_requested: bool,
 }
 
 impl<Message, Topic> Default for Router<Message, Topic>
@@ -53,10 +57,12 @@ impl<Message, Topic> Default for Router<Message, Topic>
 {
     fn default() -> Self {
         Router{
-            actors       : vec![],
-            timeline     : Timeline::default(),
-            subscriptions: RefCell::new(HashMap::default()),
-            message_queue: vec![],
+            actors         : vec![],
+            timeline       : Timeline::default(),
+            subscriptions  : RefCell::new(HashMap::default()),
+            message_queue  : vec![],
+            stop_requested : false,
+            debug_requested: false,
         }
     }
 }
@@ -92,6 +98,11 @@ impl<Message, Topic> Router<Message, Topic>
     /// Begins the event loop
     pub fn run(&mut self) {
         loop {
+            if self.stop_requested {
+                eprintln!("Stopping early.");
+                return;
+            }
+
             // Message queue processed before timeline.
             if let Some(envelope) = self.message_queue.pop() {
                 self.route(envelope);
@@ -106,7 +117,7 @@ impl<Message, Topic> Router<Message, Topic>
 
                 let envelope = Envelope{
                     from   : *from,
-                    to     : Channel::TimelineEvent,
+                    channel: Channel::TimelineEvent,
                     message: event_envelope.message.clone(),
                     time   : Some(time)
                 };
@@ -118,32 +129,104 @@ impl<Message, Topic> Router<Message, Topic>
         }
     }
 
-
     /// Handles a single message in the message queue.
     /// (This method could be public.)
-    fn route(&mut self, envelope: RcEnvelope<Message, Topic>) {
-        // Check for timeline-specific messages.
-        if let Envelope{to: Channel::ScheduleEvent, time: Some(time), ..} = envelope.as_ref(){
-            // A real implementation would have more elaborate error handling.
-            assert!(*time >= self.timeline.now());
-
-            self.timeline.push(
-                Event{
-                    time: *time,
-                    envelope: envelope.clone(),
-                }
-            )
-            // We do not return, because other actors might wish to act on timeline messages
+    pub fn route(&mut self, envelope: RcEnvelope<Message, Topic>) {
+        // Process system messages
+        if self.act_on_system_message(envelope.clone()) {
+            // The `act_on_system_message()` function returns true if we should stop routing.
+            return;
         }
 
         let mut subscriptions = self.subscriptions.borrow_mut();
-        let subscribers = subscriptions.entry(envelope.to).or_insert_with(Vec::new);
+        let subscribers = subscriptions.entry(envelope.channel).or_insert_with(Vec::new);
+
+        for handle in subscribers {
+            // let subscriber: &RcActor<Message, Topic> = self.actors.get(*handle as usize).unwrap();
+            let subscriber: &RcActor<Message, Topic> = &self.actors[*handle as usize];
+
+            let mut receiver = subscriber.borrow_mut();
+            let response     = receiver.receive_message(envelope.clone());
+
+            self.message_queue.extend(response);
+        }
+    }
+
+    /// Factored out from `route()`, returns true if `route()` should return without routing.
+    fn act_on_system_message(&mut self, envelope: RcEnvelope<Message, Topic>) -> bool {
+        // Check for system- or timeline-specific messages
+        match envelope.as_ref() {
+            Envelope { channel: Channel::ScheduleEvent, time: Some(time), .. } => {
+                // A real implementation would have more elaborate error handling.
+                assert!(*time >= self.timeline.now());
+
+                self.timeline.push(
+                    Event {
+                        time: *time,
+                        envelope: envelope.clone(),
+                    }
+                );
+                // We do not return, because other actors might wish to act on timeline messages
+                false
+            }
+
+            Envelope { channel: Channel::Time, time: None, .. } => {
+                // If the time is empty, it's a request for the current time.
+                let new_envelope = Envelope {
+                    from   : ActorHandle::default(),
+                    channel: Channel::Time,
+                    message: None,
+                    time   : Some(self.timeline.now())
+                };
+                self.message_queue.push(RcEnvelope::new(new_envelope));
+                false
+            }
+
+            Envelope { channel: Channel::Stop, .. } => {
+                self.stop_requested = true;
+                // ToDo: Should we return without routing anything else?
+                true
+            }
+
+            Envelope { channel: Channel::Debug, .. } => {
+                self.debug_requested = true;
+                // ToDo: Should we return without routing anything else?
+                true
+            }
+
+            _ => {
+                // Not a system message
+                false
+            }
+        } // end match
+    }
+
+    /// Processes system messages without broadcasting to non system actors. For non system messages,
+    /// Routes the envelope, but collects the responses in a vector and returns them instead of
+    /// putting them in a queue.
+    ///
+    /// This is useful for testing / debugging.
+    pub fn silent_route(&mut self, envelope: RcEnvelope<Message, Topic>) -> Vec<RcEnvelope<Message, Topic>> {
+        // Process system messages
+        if self.act_on_system_message(envelope.clone()) {
+            // The `act_on_system_message()` function returns true if we should stop routing.
+            return vec![];
+        }
+
+        let mut subscriptions = self.subscriptions.borrow_mut();
+        let subscribers       = subscriptions.entry(envelope.channel).or_insert_with(Vec::new);
+        let mut responses     = vec![];
 
         for handle in subscribers {
             let subscriber: &RcActor<Message, Topic> = self.actors.get(*handle as usize).unwrap();
+
             let mut receiver = subscriber.borrow_mut();
-            receiver.receive_message(envelope.clone());
+            let response     = receiver.receive_message(envelope.clone());
+            // Instead of adding the responses the message queue, we accumulate and return them.
+            responses.extend(response);
         }
+
+        responses
     }
 
 }
