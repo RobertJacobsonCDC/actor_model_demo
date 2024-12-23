@@ -1,4 +1,4 @@
-mod timeline;
+pub mod timeline;
 pub mod message;
 pub mod actor;
 pub mod router;

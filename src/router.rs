@@ -9,7 +9,7 @@ use std::{
     cell::RefCell,
     fmt::Debug
 };
-
+use std::collections::VecDeque;
 use crate::{
     actor::{
         ActorHandle,
@@ -43,8 +43,8 @@ pub struct Router<Message, Topic>
     /// use a bit mask instead of a `Vec<ActorHandle>`. You might also make this
     /// a HashSet or something to prevent double subscriptions.
     subscriptions: RefCell<HashMap<Channel<Topic>, Vec<ActorHandle>>>,
-    /// Queue of messages ready for immediate processing
-    message_queue: Vec<RcEnvelope<Message, Topic>>,
+    /// A FIFO queue of messages ready for immediate processing
+    message_queue: VecDeque<RcEnvelope<Message, Topic>>,
     /// An early exit has been triggered
     stop_requested: bool,
     /// Debug session has been triggered.
@@ -60,7 +60,7 @@ impl<Message, Topic> Default for Router<Message, Topic>
             actors         : vec![],
             timeline       : Timeline::default(),
             subscriptions  : RefCell::new(HashMap::default()),
-            message_queue  : vec![],
+            message_queue  : VecDeque::new(),
             stop_requested : false,
             debug_requested: false,
         }
@@ -104,7 +104,7 @@ impl<Message, Topic> Router<Message, Topic>
             }
 
             // Message queue processed before timeline.
-            if let Some(envelope) = self.message_queue.pop() {
+            if let Some(envelope) = self.message_queue.pop_front() {
                 self.route(envelope);
                 // We continue, because an actor might have placed something in the
                 // message queue that needs processing before we process the timeline.
@@ -178,7 +178,9 @@ impl<Message, Topic> Router<Message, Topic>
                     message: None,
                     time   : Some(self.timeline.now())
                 };
-                self.message_queue.push(RcEnvelope::new(new_envelope));
+                #[cfg(feature = "print_messages")]
+                println!("ROUTER/TIMELINE: {:?}", new_envelope);
+                self.message_queue.push_back(RcEnvelope::new(new_envelope));
                 false
             }
 

@@ -7,11 +7,14 @@ in the form of an implementor of `MessagePayload`.
 
 */
 
-use ixa2::actor::ActorHandle;
-use ixa2::message::{
-  Channel    as GenericChannel,
-  Envelope   as GenericEnvelope,
-  RcEnvelope as GenericRcEnvelope
+use actor_model::{
+  actor::ActorHandle,
+  message::{
+    Channel    as GenericChannel,
+    Envelope   as GenericEnvelope,
+    RcEnvelope as GenericRcEnvelope
+  },
+  timeline::Time
 };
 
 use crate::people::{InfectionStatus, PersonID};
@@ -35,6 +38,8 @@ pub enum Topic {
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Message {
+  /// Used to hold status change for timeline events and direct requests for status change
+  /// and to respond to queries for a person's current status.
   PersonStatus(PersonID, InfectionStatus),
   RequestPersonStatus(PersonID),
   PopulationReport{
@@ -42,13 +47,14 @@ pub enum Message {
     infected   : u32,
     recovered  : u32,
   },
+  AttemptInfection,
 }
 
 impl Message {
   // Convenience methods
 
   #[inline(always)]
-  pub fn make_person_status_change(actor_handle: ActorHandle, person_id: PersonID, infection_status: InfectionStatus) -> RcEnvelope {
+  pub fn make_person_status_change(actor_handle: ActorHandle, person_id: PersonID, infection_status: InfectionStatus, time: Time) -> RcEnvelope {
     RcEnvelope::new(
       Envelope {
         from   : actor_handle,
@@ -56,7 +62,7 @@ impl Message {
         message: Some(
           Message::PersonStatus(person_id, infection_status)
         ),
-        time   : None,
+        time   : Some(time),
       }
     )
   }
@@ -76,7 +82,12 @@ impl Message {
   }
 
   #[inline(always)]
-  pub fn make_person_status(actor_handle: ActorHandle, person_id: PersonID, infection_status: InfectionStatus) -> RcEnvelope {
+  pub fn make_person_status(
+    actor_handle: ActorHandle,
+    person_id: PersonID,
+    infection_status: InfectionStatus,
+    time: Option<Time>
+  ) -> RcEnvelope {
     RcEnvelope::new(
       Envelope {
         from   : actor_handle,
@@ -84,7 +95,7 @@ impl Message {
         message: Some(
           Message::PersonStatus(person_id, infection_status)
         ),
-        time   : None,
+        time,
       }
     )
   }
@@ -124,5 +135,28 @@ impl Message {
     )
   }
 
+  #[inline(always)]
+  pub fn make_schedule_attempt_infection(actor_handle: ActorHandle, time: Time) -> RcEnvelope {
+    RcEnvelope::new(
+      Envelope {
+        from   : actor_handle,
+        channel: Channel::ScheduleEvent,
+        message: Some(Message::AttemptInfection),
+        time   : Some(time),
+      }
+    )
+  }
+
+  #[inline(always)]
+  pub fn make_stop_message(actor_handle: ActorHandle) -> RcEnvelope {
+    RcEnvelope::new(
+      Envelope {
+        from   : actor_handle,
+        channel: Channel::Stop,
+        message: None,
+        time   : None,
+      }
+    )
+  }
 
 }

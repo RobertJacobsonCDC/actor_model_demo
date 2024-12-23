@@ -9,7 +9,7 @@ An `Actor` that tracks the status of the population. It's only job is:
 
 use serde::{Deserialize, Serialize};
 
-use ixa2::actor::{Actor, ActorHandle};
+use actor_model::actor::{Actor, ActorHandle};
 
 use crate::{
     message::{
@@ -109,20 +109,40 @@ impl Population {
 
 impl Actor<Message, Topic> for Population {
     fn receive_message(&mut self, envelope: RcEnvelope) -> Vec<RcEnvelope> {
-
         // In general, we have a method that responds to every message type we know how to answer.
 
-        match *envelope {
+        // There are two ways for a person's status to change: directly, and through a
+        // scheduled timeline event. The first two match branches are these cases respectively.
+
+        let messages = match *envelope {
 
             Envelope {
                 channel: Channel::Topic(Topic::ChangePersonStatus),
-                message: Some(Message::PersonStatus(person_id, status)),
+                message: Some(Message::PersonStatus(person_id, infection_status)),
+                time,
+                ..
+            }
+            | Envelope {
+                channel: Channel::TimelineEvent,
+                message: Some(Message::PersonStatus(person_id, infection_status)),
+                time,
                 ..
             }
              => {
-                self.set_person_status(person_id, status);
-                // We emit a population report after every status change.
-                vec![self.get_population_report()]
+                self.set_person_status(person_id, infection_status);
+                // We emit the person's new status after the change, thereby notifying any potential listeners.
+                let mut messages = vec![
+                    Message::make_person_status(self.handle, person_id, infection_status, time)
+                ];
+                // Check if simulation is over.
+                if self.recovered == self.person_count() as u32 {
+                    #[cfg(feature = "print_messages")]
+                    println!("All people recovered.");
+                    messages.push(
+                        Message::make_stop_message(self.handle)
+                    );
+                }
+                messages
             }
 
             Envelope {
@@ -130,7 +150,9 @@ impl Actor<Message, Topic> for Population {
                 message: Some(Message::RequestPersonStatus(person_id)),
                 ..
             } => {
-                // This is a request for the status of a person
+
+                // This is a request for the status of a person. Note that the
+                // time will not be set, indicating this is not a transition.
                 vec![self.get_person_status(person_id)]
             }
 
@@ -153,12 +175,18 @@ impl Actor<Message, Topic> for Population {
             }
 
             _ => {
-                eprintln!("Population actor received malformed message received: {:?}", envelope);
+                // eprintln!("Population actor received malformed message received: {:?}", envelope);
                 vec![]
             }
 
+        };
+
+        #[cfg(feature = "print_messages")]
+        for message in &messages {
+            println!("POPULATION: {:?}", message);
         }
 
+        messages
     }
 
 
@@ -166,11 +194,15 @@ impl Actor<Message, Topic> for Population {
         self.handle = handle;
 
         let initial_population_report = self.get_population_report();
+        #[cfg(feature = "print_messages")]
+        println!("ROUTER/TIMELINE: {:?}", initial_population_report);
 
         let subscriptions = vec![
             Channel::Topic(Topic::ChangePersonStatus),
             Channel::Topic(Topic::RequestPersonStatus),
             Channel::Topic(Topic::PopulationReport),
+            Channel::TimelineEvent, // Wraps `ChangePersonStatus`
+
             // We emit but do not subscribe to the following:
             // Channel::Topic(Topic::PersonStatus),
 
@@ -210,7 +242,7 @@ mod test {
         );
 
         // Now set the status of person_id 0 to infected
-        let response = context.silent_route(Message::make_person_status_change(0, 0, InfectionStatus::Infected));
+        let response = context.silent_route(Message::make_person_status_change(0, 0, InfectionStatus::Infected, 1.0.into()));
 
         // There should be exactly 1 response, a population report.
         assert_eq!(1, response.len());

@@ -48,7 +48,7 @@ pub enum Channel<Topic>
   Debug, // Request command line
 
   // Timeline-related Messages
-  TimelineEvent, // Emitted by `Timeline`
+  TimelineEvent, // Emitted by `Timeline`. Could choose to allow topic in here, too.
   ScheduleEvent, // Request to schedule an event
   Time,          // Time request and answer
 
