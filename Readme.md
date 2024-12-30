@@ -2,7 +2,18 @@
 
 This is a basic illustrative reproduction of enough of Ixa's functionality to implement the `basic-infection` example using the actor model. The code is in some ways more complicated than it needs to be: in practice one would use a library instead of implementing actors and message passing from scratch, but I wanted to show how it works. Likewise, because this implementation is not very sophisticated, the `basic-infection` implementation is more complicated than it would be in practice.
 
+Turn off the `print_messages` feature to make it run (nearly) silently. Printing messages contributes most of the running time.
+
+```toml
+[features]
+default = ["print_messages"]
+
+print_messages = []
+```
+
 # Two and a Half Interacting Requirements
+
+The point is to illustrate the first of the two (and a bit) major requirements of a discrete event agent modeling framework. Here are a few disjointed thoughts on these requirements, a kind of brain dump written mostly for my own benefit.
 
 ## Actor Model
 
@@ -12,20 +23,24 @@ can happen synchronously, asynchronously, across threads, etc.
 A "real" implementation would use a library like [actix](https://actix.rs/docs/actix/actor). In this 
 example we just have a simple synchronous single threaded version to illustrate. 
 
-We use a star topology in which all communication is routed through a central manager called a `Router`, as it routes the messages. Other topologies are possible. For example, actors could communicate directly with each other, signalling the timeline actor when the next timeline event should fire. This is probably the better solution but is more complicated.
+We use a star topology in which all communication is routed through a central manager called a `Router`, as it routes the messages. Other topologies are possible–indeed, probably preferred. For example, actors could communicate directly with each other, signalling the timeline actor when the next timeline event should fire. This is probably the better solution but is more complicated.
 
-## Data Model
+The main advantage of this model is two important forms of decoupling:
 
-An "entity", like a person, has various "components", or pieces of data associated to them. So a person might have:
- 
- - age
- - weight
- - immune competence
- - immune resilience
- - infection status
- - comorbidities
- - sex
- - immediate contacts / cohabitants
+1. Decoupling of computation (in response to events or messages) from complex orchestration of behaviors and events. Computation occurs based on local conditions alone involving local data alone.
+2. Decoupling of "messages" from the senders and receivers of those messages. The senders and receivers do not need to know anything about each other, even whether each other exist at all.
+
+Actors don't need to know anything about the sender or receiver of a message, nor do they require complex orchestration with other actors
+
+## Entity Component System (ECS) Data Model
+
+ECS is in some sense the opposite of how data works in the actor model: data is globally available. Three "things" exist in this model (stolen from Wikipedia):
+
+ - **Entity:** An entity represents a general-purpose object. In a game engine context, for example, every coarse game object is represented as an entity. Usually, it only consists of a unique id. Implementations typically use a plain integer for this.
+
+ - **Component:** A component characterizes an entity as possessing a particular aspect, and holds the data needed to model that aspect. For example, every game object that can take damage might have a Health component associated with its entity. Implementations typically use structs, classes, or associative arrays.
+
+ - **System:** A system is a process which acts on all entities with the desired components. For example, a physics system may query for entities having mass, velocity and position components, and iterate over the results doing physics calculations on the set of components for each entity.
 
 Different parts of the model may need to query this data and act on the results. We want to do this in a typesafe 
 yet ergonomic way.
@@ -34,11 +49,6 @@ yet ergonomic way.
 
 Computation and I/O may be able to happen concurrently / in parallel, potentially with dramatic performance benefits.
 
-## Non Issues
-
- - Typesafe I/O: This is a solved problem. 
- - Types need not be dynamic, as they are always known at compile time. 
-
 ## Candidate frameworks
 
  - Bevy ECS: Has built-in support for ergonomic data model (entity-component system) _and_ Actor model (events), 
@@ -46,11 +56,18 @@ Computation and I/O may be able to happen concurrently / in parallel, potentiall
  - Actix: Powerful framework for Actor model, built-in concurrency / parallelism features. Orthogonal to data model; 
    very mature and battle tested; some support for distributed systems.
 
-Existing solutions get us many developer years of very high quality work that we are unlikely to match. What's more, 
-they are maintained by a third party. We just can't get the same capabilities with an in-house solution.
+It is not clear to me if, for example, Bevy ECS can't do everything we need. But smart people have tried and couldn't get it to work, so I need to understand our needs better and, if Bevy *can* get the job done, justify that it can in a sufficiently convincing way.
 
 ## Challenges with current code
 
 Types that implement the `Any` trait must have static lifetimes. Thus, any implementing type is unable to hold a 
-nonstatic reference. This is likely to be a problem. 
+nonstatic reference. This is likely to eventually be a problem. 
 
+Subverting the type system is usually not what one wants to do. Rather, we should leverage the type system to make sure users (and ourselves as library devs) do the right things.
+
+It isn't idiomatic or aesthetic, though this is not really an argument. 
+
+At least some of the reasons for the current design choices actually show up in this demo:
+
+ - The `Channel` enum (in `src/message.rs`) needs to be extensible, which I accomplish using a generic `Topic` implementing the trait bounds encoded in `BoundedTopic`.
+ - Likewise with the `Message` generic type in, for example, `pub struct Envelope<Message, Topic>  where Topic: BoundedTopic, Message: Clone + Debug`. I make a `Message` enum with all possible messages. In practice, this must be known at compile time, but may only be known to the compiler rather than to the programmer herself.
